@@ -1,0 +1,580 @@
+# GNEC
+
+**[한국어](#한국어) · [日本語](#日本語) · [English](#english)**
+
+---
+
+## 한국어
+
+### GNEC란?
+
+GNEC는 패러디 프로그래밍 언어 **GNE(그네)** 의 **검열판**입니다. 원본 GNE 명세의 **언어 구조**
+(문법, 구조체·객체, 예외 처리, 문자열 보간, 주석 형식, 인코딩 등)를 따르는 인터프리터를 C11 로 새로 구현했습니다.
+
+> **키워드에 대하여.** 원본 GNE 명세는 실존 정치인·정당을 겨냥한 표현을 키워드와 오류 메시지로
+> 삼고 있습니다. GNEC 는 그 **언어 구조만** 가져오고, 키워드는 전부 **중립적인 한국어**로 바꿨습니다.
+> 키워드는 `src/keywords.h` 한 파일에 모여 있어, 원하는 낱말로 바꿀 수 있습니다.
+
+외부 의존성은 libm 과 (EUC-KR 입력 변환 시) POSIX `iconv` 뿐입니다.
+`-Wall -Wextra -Wpedantic -Wshadow -Wconversion` 에서 경고 0개, ASan/UBSan/valgrind 에서
+누수·오류 0개(오류·예외·종료 경로 포함)를 확인했습니다. 단, **자기 참조 순환 구조**는 참조 카운트 방식의
+알려진 한계로 회수되지 않습니다(아래 「알려진 한계」 참고).
+
+### 빌드 & 실행
+
+```sh
+make                 # ./gnec 생성
+make test            # 예제 출력 비교 + 오류 케이스 검사
+make debug           # ASan/UBSan 빌드
+make NO_ICONV=1      # EUC-KR 입력을 끈 빌드 (UTF-8/UTF-16 만)
+
+./gnec examples/factorial.ㄹ      # 파일 실행
+./gnec -e '프로그램 { 콘솔.로그("안녕"); }'
+```
+
+소스 파일은 **EUC-KR / UTF-8 / UTF-16(BOM)** 을 자동 인식해 내부적으로 UTF-8 로 변환합니다.
+소스 파일 확장자는 원본 명세대로 `.ㄹ` 입니다.
+
+### 원본 명세 대비 구현 범위
+
+| 명세의 구조적 요소 | 구현 | GNEC 키워드 |
+|---|---|---|
+| 세미콜론 종결 문장 + `{}` 블록 | O | — |
+| 변수 선언 | O | `선언` |
+| 서술형/기호 대입 | O | `는` 또는 `=` |
+| 구조체(필드 선언) 정의 | O | `구조체` |
+| 객체 생성 | O | `새로` |
+| 필드 접근·대입 `obj.f` | O | — |
+| 배열 리터럴·인덱스·배열 필드 | O | `[ ]` |
+| 함수 정의/호출/반환 | O | `함수` / `돌려주기` |
+| 조건·반복 | O | `만약` / `아니면` / `반복` |
+| break / continue | O | `완료` / `계속` |
+| try / catch | O | `시도` / `예외` |
+| 프로세스 종료 | O | `종료` |
+| import / export | 구문만 (실행 시 무시) | `가져오기` / `내보내기` |
+| `${식}` 문자열 보간 | O | — |
+| `/ㄹ ㄹ/` 여러 줄 주석 | O | — |
+| 참/거짓/없음 | O | `참` / `거짓` / `없음` |
+| EUC-KR·UTF-16 소스 입력 | O | — |
+
+구현하지 않은 것: 프록시(별칭) 객체, 익명 함수, TTS, 패키지 매니저, 하드웨어 사양 검사 등
+언어 핵심이 아니거나 패러디 장치에 해당하는 부분.
+
+### 문법 요약
+
+```
+/ㄹ 여러 줄 주석. // 한 줄 주석도 가능 ㄹ/
+
+구조체 사람 {
+    선언 이름;
+    선언 친구들[];      /ㄹ 배열 필드 ㄹ/
+}
+
+함수 K-인사(사람) {
+    콘솔.로그("안녕 ${사람.이름}");   /ㄹ 문자열 보간 ㄹ/
+    돌려주기 사람.이름;
+}
+
+프로그램 {
+    선언 철수 는 새로 사람();
+    철수.이름 는 "철수";
+    철수.친구들[0] 는 "영희";       /ㄹ 인덱스 대입 (필요하면 배열이 자동으로 늘어남) ㄹ/
+
+    선언 i 는 0;
+    반복 (i < 3) {
+        만약 (i == 1) { i++; 계속; }
+        콘솔.로그(i);
+        i++;
+    }
+
+    시도 {
+        선언 x 는 10 / 0;
+    } 예외 (오류) {
+        콘솔.로그("잡음:", 오류);
+    }
+
+    종료(0);
+}
+```
+
+연산자 우선순위(낮음→높음): `또는`/`||` → `그리고`/`&&` → `아닌`/`!` →
+비교(`== != < <= > >=`) → `+ 더하기 -` → `* / %` → 단항 `-` → 후위(`()` `[]` `.필드` `.메서드()`)
+
+#### 값의 종류
+`숫자`(double), `문자열`(UTF-8, 불변), `논리`(참/거짓), `없음`, `배열`(가변·참조), `객체`(구조체 인스턴스, 참조), `함수`
+
+- `문자열 + 아무값` → 이어 붙이기, `배열 + 배열` → 합친 새 배열
+- 문자열 인덱싱/길이는 글자(코드포인트) 단위, 음수 인덱스는 뒤에서부터
+- 배열 인덱스 대입에서 `arr[길이]` 는 끝에 추가, 그 사이 빈 칸은 `없음` 으로 채움
+
+#### 내장
+- 함수: `출력`, `길이`, `추가`, `종류`, `숫자`, `문자`
+- 콘솔 객체: `콘솔.로그(...)`(표준출력), `콘솔.오류(...)`(표준오류)
+
+#### 이름 안의 `-`
+`K-계승`, `K-인공지능-로드맵` 같은 이름을 쓸 수 있도록, `-` 바로 뒤에 **한글**이 오면 이름의 일부로 봅니다.
+그 외에는 연산자입니다: `i--` 는 감소, `n-1` · `a-b` 는 뺄셈. 한글 변수끼리 뺄 때는 `가 - 나` 처럼 띄어 쓰세요.
+증감(`++`/`--`)은 문장으로만 씁니다 (`i++;`).
+
+### 예제 (`examples/`)
+
+| 파일 | 보여주는 기능 |
+|---|---|
+| `factorial.ㄹ` | 함수, 반복, 반환값 |
+| `피보나치.ㄹ` | 재귀 vs 반복, 너무 깊은 재귀를 예외로 잡기 |
+| `구구단.ㄹ` | 중첩 반복, `${}` 보간으로 문자열 쌓기 |
+| `정렬.ㄹ` | 버블 정렬, 배열의 참조 전달(제자리 정렬), 숫자·문자열 비교 |
+| `소수.ㄹ` | 에라토스테네스의 체, 인덱스 대입으로 배열 자동 확장 |
+| `문자열.ㄹ` | 한글 글자 단위 인덱싱·길이, 문자열 뒤집기, 회문 판정 |
+| `book.ㄹ` | 구조체, 배열 필드 |
+| `계좌.ㄹ` | 구조체 + 함수로 상태 변경, 잘못된 요청을 예외로 거절 |
+| `연결리스트.ㄹ` | 객체가 객체를 가리키는 구조, `없음` 비교, 리스트 뒤집기 |
+| `greet.ㄹ` | `아니면 만약` 사슬, 보간 안의 함수 호출 |
+| `retry.ㄹ` | 반복 중 예외 처리 후 계속, `종료(0)` 로 즉시 끝내기 |
+| `원본구조/*.ㄹ` | 원본 GNE 예제의 구조를 중립 키워드로 옮긴 것 |
+
+### 내부 구조
+
+```
+src/keywords.h  키워드 표 (여기만 고치면 키워드 교체)
+src/gnec.h      공용 타입 (Token/Node/Value/Object/Table/Interp)
+src/loader.c    EUC-KR / UTF-16 → UTF-8 변환 (BOM 감지, 서로게이트 페어 처리)
+src/lexer.c     토크나이저 (${} 보간 분해, /ㄹ ㄹ/ 주석)
+src/parser.c    재귀 하강 파서 → AST (보간식 재귀 파싱)
+src/value.c     값 / 참조 카운트 / 해시 테이블 / UTF-8
+src/interp.c    트리 워킹 평가기, 객체, 예외(try/catch), 종료
+src/main.c      실행기 (파일 / -e)
+```
+
+메모리 설계:
+
+- **AST**: 모든 노드를 `Program` 에 등록해 두므로, 문법 오류(longjmp) 시 `program_free()` 한 번으로 회수됩니다.
+  보간식용으로 임시로 만든 토큰열도 성공·실패와 무관하게 일괄 해제합니다.
+- **값**: 문자열/배열/객체는 힙 객체 + 참조 카운트입니다. 객체가 다른 객체·배열을 필드로 갖는
+  **트리 구조는 정상 회수**됩니다.
+- **예외**: 런타임 오류(0으로 나눔, 범위 초과, 타입 불일치 등)는 예외로 던져지고, 가장 안쪽 `시도/예외` 가
+  `jmp_buf` 로 받습니다. `try` 진입 시 호출 프레임과 임시값 스택의 깊이를 기록해 두었다가,
+  예외로 되돌아오면 그 깊이까지 되감아 누수를 막습니다.
+- **종료**: `종료` 는 스택을 건너뛰어 최상위로 돌아가며, `try` 로 잡히지 않습니다.
+- **안전 한계**: 파서 중첩 200단계, 함수 호출 1000단계, 인덱스 대입에 의한 배열 확장 간격 2^20.
+
+### 알려진 한계
+- **자기 참조 순환**(배열/객체가 자기 자신을 직·간접으로 포함)은 참조 카운트로 회수되지 않습니다.
+  출력은 깊이 32에서 `[...]` 로 끊어 무한 루프만 막습니다.
+- 클로저/프록시/익명 함수는 지원하지 않습니다.
+- BOM 없는 UTF-16 은 EUC-KR 과 구분할 수 없어, UTF-16 은 BOM 이 있어야 인식합니다.
+
+### 라이선스
+
+GNEC 의 소스 코드와 문서는 [MIT 라이선스](LICENSE)로 배포합니다. Copyright (c) 2026 chicklee-k
+
+`examples/원본구조/` 의 파일은 원본 GNE 예제의 구성을 따라 쓴 것입니다. 원본 GNE 저장소에는 라이선스가 표시되어 있지 않으므로, 이 파일들을 따로 배포할 때는 원작자의 권리에 유의하세요.
+
+### 출처
+
+GNEC 의 소스 코드는 전부 새로 작성했으며, 아래 저장소의 코드를 복사하지 않았습니다.
+언어 명세·문법·예제를 참고했습니다.
+
+- **원본작: perillamint** — [perillamint/GNE](https://github.com/perillamint/GNE)
+- [Shaman1sm/GNE](https://github.com/Shaman1sm/GNE) — "준비된 한국형 언어"
+- [sukso96100/K-SSVM-node](https://github.com/sukso96100/K-SSVM-node) — [xnuk/K-SSVM-node](https://github.com/xnuk/K-SSVM-node) 의 포크, Node.js 용 런타임 구현체 (BSD 3-Clause, © 2016 Felis catus)
+- [GNE.g4](https://gist.github.com/sftblw/de0ac03c71a1c35e67a8518b0fc84613) (sftblw) — GNE 의 ANTLR 4 문법 초안
+
+참고한 GNE 아카이브에는 라이선스 파일이 포함되어 있지 않았습니다.
+
+---
+
+## 日本語
+
+### GNECとは？
+
+GNECは、パロディ・プログラミング言語 **GNE（グネ）** の **検閲版** です。オリジナルGNE仕様の **言語構造**
+（文法、構造体・オブジェクト、例外処理、文字列補間、コメント形式、文字コードなど）に従うインタプリタを、C11で新たに実装しました。
+
+> **キーワードについて。** オリジナルのGNE仕様は、実在の政治家・政党を標的にした表現をキーワードや
+> エラーメッセージとして使っています。GNECはその **言語構造だけ** を取り入れ、キーワードはすべて
+> **中立的な韓国語** に置き換えました。キーワードは `src/keywords.h` 1ファイルにまとめてあり、好きな語に変更できます。
+
+外部依存は libm と（EUC-KR入力を変換する場合の）POSIX `iconv` のみです。
+`-Wall -Wextra -Wpedantic -Wshadow -Wconversion` で警告0件、ASan/UBSan/valgrind でリーク・エラー0件
+（エラー・例外・終了の経路を含む）を確認済みです。ただし **自己参照の循環構造** は、参照カウント方式の
+既知の制限により回収されません（下記「既知の制限」参照）。
+
+### ビルドと実行
+
+```sh
+make                 # ./gnec を生成
+make test            # サンプル出力の比較 + エラーケースの検査
+make debug           # ASan/UBSan ビルド
+make NO_ICONV=1      # EUC-KR入力を無効にしたビルド（UTF-8/UTF-16のみ）
+
+./gnec examples/factorial.ㄹ      # ファイルを実行
+./gnec -e '프로그램 { 콘솔.로그("안녕"); }'
+```
+
+ソースファイルは **EUC-KR / UTF-8 / UTF-16（BOM付き）** を自動判別し、内部でUTF-8に変換します。
+拡張子はオリジナル仕様どおり `.ㄹ` です。
+
+### オリジナル仕様に対する実装範囲
+
+| 仕様の構造要素 | 実装 | GNECキーワード |
+|---|---|---|
+| セミコロン終端の文 + `{}` ブロック | ○ | — |
+| 変数宣言 | ○ | `선언` |
+| 叙述形／記号による代入 | ○ | `는` または `=` |
+| 構造体（フィールド宣言）の定義 | ○ | `구조체` |
+| オブジェクト生成 | ○ | `새로` |
+| フィールドの参照・代入 `obj.f` | ○ | — |
+| 配列リテラル・添字・配列フィールド | ○ | `[ ]` |
+| 関数の定義／呼び出し／戻り値 | ○ | `함수` / `돌려주기` |
+| 条件分岐・ループ | ○ | `만약` / `아니면` / `반복` |
+| break / continue | ○ | `완료` / `계속` |
+| try / catch | ○ | `시도` / `예외` |
+| プロセス終了 | ○ | `종료` |
+| import / export | 構文のみ（実行時は無視） | `가져오기` / `내보내기` |
+| `${式}` 文字列補間 | ○ | — |
+| `/ㄹ ㄹ/` 複数行コメント | ○ | — |
+| 真／偽／なし | ○ | `참` / `거짓` / `없음` |
+| EUC-KR・UTF-16 ソース入力 | ○ | — |
+
+実装していないもの：プロキシ（別名）オブジェクト、無名関数、TTS、パッケージマネージャ、ハードウェア要件チェックなど、
+言語の中核ではない部分やパロディ的な仕掛けにあたる部分。
+
+### キーワード対応表
+
+| GNEC | 意味 |
+|---|---|
+| `선언` | 変数宣言（var） |
+| `는` | 代入（`=` も可） |
+| `구조체` / `새로` | 構造体定義 / オブジェクト生成（new） |
+| `함수` / `돌려주기` | 関数定義 / return |
+| `만약` / `아니면` / `반복` | if / else / while |
+| `완료` / `계속` | break / continue |
+| `시도` / `예외` / `종료` | try / catch / exit |
+| `프로그램` | エントリポイントのブロック |
+| `참` / `거짓` / `없음` | true / false / null |
+| `그리고` / `또는` / `아닌` | and / or / not |
+| `더하기` | `+` と同じ |
+| `콘솔.로그` | 標準出力へ表示（console.log） |
+
+### 文法の概要
+
+```
+/ㄹ 複数行コメント。// 1行コメントも使える ㄹ/
+
+구조체 사람 {
+    선언 이름;
+    선언 친구들[];      /ㄹ 配列フィールド ㄹ/
+}
+
+함수 K-인사(사람) {
+    콘솔.로그("안녕 ${사람.이름}");   /ㄹ 文字列補間 ㄹ/
+    돌려주기 사람.이름;
+}
+
+프로그램 {
+    선언 철수 는 새로 사람();
+    철수.이름 는 "철수";
+    철수.친구들[0] 는 "영희";       /ㄹ 添字代入（必要なら配列が自動で伸びる） ㄹ/
+
+    선언 i 는 0;
+    반복 (i < 3) {
+        만약 (i == 1) { i++; 계속; }
+        콘솔.로그(i);
+        i++;
+    }
+
+    시도 {
+        선언 x 는 10 / 0;
+    } 예외 (오류) {
+        콘솔.로그("잡음:", 오류);
+    }
+
+    종료(0);
+}
+```
+
+演算子の優先順位（低→高）：`또는`/`||` → `그리고`/`&&` → `아닌`/`!` →
+比較（`== != < <= > >=`）→ `+ 더하기 -` → `* / %` → 単項 `-` → 後置（`()` `[]` `.フィールド` `.メソッド()`）
+
+#### 値の種類
+数値（double）、文字列（UTF-8、不変）、論理値（참/거짓）、`없음`（なし）、配列（可変・参照）、オブジェクト（構造体のインスタンス、参照）、関数
+
+- `文字列 + 任意の値` → 連結、`配列 + 配列` → 結合した新しい配列
+- 文字列の添字・長さは文字（コードポイント）単位、負の添字は末尾から
+- 配列への添字代入で `arr[長さ]` は末尾に追加、間の空きは `없음` で埋める
+
+#### 組み込み
+- 関数：`출력`（表示）、`길이`（長さ）、`추가`（追加）、`종류`（型名）、`숫자`（数値へ変換）、`문자`（文字列へ変換）
+- コンソールオブジェクト：`콘솔.로그(...)`（標準出力）、`콘솔.오류(...)`（標準エラー）
+
+#### 名前の中の `-`
+`K-계승` や `K-인공지능-로드맵` のような名前を使えるよう、`-` の直後に **ハングル** が来る場合は名前の一部とみなします。
+それ以外は演算子です：`i--` はデクリメント、`n-1`・`a-b` は減算。ハングルの変数同士を引くときは `가 - 나` のように空白を入れてください。
+増減（`++`/`--`）は文としてのみ使えます（`i++;`）。
+
+### サンプル（`examples/`）
+
+| ファイル | 示している機能 |
+|---|---|
+| `factorial.ㄹ` | 関数、ループ、戻り値 |
+| `피보나치.ㄹ` | 再帰とループの比較、深すぎる再帰を例外で捕捉 |
+| `구구단.ㄹ` | 九九表。入れ子のループ、`${}` 補間による文字列の組み立て |
+| `정렬.ㄹ` | バブルソート、配列の参照渡し（その場でソート）、数値・文字列の比較 |
+| `소수.ㄹ` | エラトステネスの篩、添字代入による配列の自動拡張 |
+| `문자열.ㄹ` | ハングルの文字単位の添字・長さ、文字列の反転、回文判定 |
+| `book.ㄹ` | 構造体、配列フィールド |
+| `계좌.ㄹ` | 銀行口座。構造体 + 関数による状態変更、不正な要求を例外で拒否 |
+| `연결리스트.ㄹ` | 連結リスト。オブジェクトがオブジェクトを指す構造、`없음` との比較、反転 |
+| `greet.ㄹ` | `아니면 만약`（else if）の連鎖、補間内での関数呼び出し |
+| `retry.ㄹ` | ループ中の例外処理と継続、`종료(0)` による即時終了 |
+| `원본구조/*.ㄹ` | オリジナルGNEのサンプルの構造を中立キーワードに移したもの |
+
+### 内部構造
+
+```
+src/keywords.h  キーワード表（ここだけ直せばキーワードを変更できる）
+src/gnec.h      共通の型（Token/Node/Value/Object/Table/Interp）
+src/loader.c    EUC-KR / UTF-16 → UTF-8 変換（BOM判定、サロゲートペア処理）
+src/lexer.c     字句解析（${} 補間の分解、/ㄹ ㄹ/ コメント）
+src/parser.c    再帰下降パーサ → AST（補間式も再帰的に構文解析）
+src/value.c     値 / 参照カウント / ハッシュテーブル / UTF-8
+src/interp.c    ツリーウォーキング評価器、オブジェクト、例外（try/catch）、終了
+src/main.c      実行コマンド（ファイル / -e）
+```
+
+メモリ設計：
+
+- **AST**：すべてのノードを `Program` に登録しておくため、構文エラー（longjmp）時も `program_free()` 1回で回収されます。
+  補間式のために一時的に作ったトークン列も、成功・失敗にかかわらず一括で解放します。
+- **値**：文字列・配列・オブジェクトはヒープ上のオブジェクト + 参照カウントです。オブジェクトが他のオブジェクトや
+  配列をフィールドに持つ **木構造は正しく回収** されます。
+- **例外**：実行時エラー（ゼロ除算、範囲外、型の不一致など）は例外として投げられ、最も内側の `시도/예외` が
+  `jmp_buf` で受け取ります。`try` に入る時点の呼び出しフレームと一時値スタックの深さを記録しておき、
+  例外で戻ってきたときにその深さまで巻き戻してリークを防ぎます。
+- **終了**：`종료` はスタックを飛び越えて最上位に戻り、`try` では捕捉されません。
+- **安全上の上限**：パーサのネスト200段、関数呼び出し1000段、添字代入による配列拡張の間隔 2^20。
+
+### 既知の制限
+- **自己参照の循環**（配列・オブジェクトが直接または間接に自分自身を含む）は参照カウントでは回収されません。
+  表示は深さ32で `[...]` に打ち切り、無限ループだけを防ぎます。
+- クロージャ・プロキシ・無名関数には対応していません。
+- BOMのないUTF-16はEUC-KRと区別できないため、UTF-16はBOM付きでのみ認識します。
+
+### ライセンス
+
+GNECのソースコードとドキュメントは[MITライセンス](LICENSE)で配布します。Copyright (c) 2026 chicklee-k
+
+`examples/원본구조/` のファイルは、オリジナルGNEのサンプルの構成に沿って書いたものです。オリジナルのGNEリポジトリにはライセンスが表示されていないため、これらのファイルを個別に配布する際は原作者の権利にご注意ください。
+
+### 出典
+
+GNECのソースコードはすべて新たに書いたもので、以下のリポジトリのコードはコピーしていません。
+言語仕様・文法・サンプルを参考にしました。
+
+- **原作：perillamint** — [perillamint/GNE](https://github.com/perillamint/GNE)
+- [Shaman1sm/GNE](https://github.com/Shaman1sm/GNE) — 「준비된 한국형 언어」
+- [sukso96100/K-SSVM-node](https://github.com/sukso96100/K-SSVM-node) — [xnuk/K-SSVM-node](https://github.com/xnuk/K-SSVM-node) のフォーク、Node.js向けランタイム実装（BSD 3-Clause、© 2016 Felis catus）
+- [GNE.g4](https://gist.github.com/sftblw/de0ac03c71a1c35e67a8518b0fc84613)（sftblw）— GNEのANTLR 4文法の草案
+
+参考にしたGNEのアーカイブにはライセンスファイルが含まれていませんでした。
+
+---
+
+## English
+
+### What is GNEC?
+
+GNEC is a **censored edition** of **GNE**, a parody programming language. It is a new C11 interpreter that follows
+the **language structure** of the original GNE specification: its syntax, structs and objects, exception handling,
+string interpolation, comment style, and source encodings.
+
+> **About the keywords.** The original GNE specification uses expressions aimed at real politicians and political
+> parties as its keywords and error messages. GNEC takes **only the language structure** and replaces every keyword
+> with **neutral Korean words**. All keywords live in a single file, `src/keywords.h`, so you can change them freely.
+
+The only external dependencies are libm and, for EUC-KR input, POSIX `iconv`.
+It builds with zero warnings under `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`, and ASan/UBSan/valgrind report
+no leaks or errors, including on error, exception, and exit paths. The one exception is **self-referencing cycles**,
+which reference counting cannot reclaim (see "Known limitations" below).
+
+### Build & run
+
+```sh
+make                 # builds ./gnec
+make test            # compares example outputs + checks error cases
+make debug           # ASan/UBSan build
+make NO_ICONV=1      # build without EUC-KR input (UTF-8/UTF-16 only)
+
+./gnec examples/factorial.ㄹ      # run a file
+./gnec -e '프로그램 { 콘솔.로그("안녕"); }'
+```
+
+Source files in **EUC-KR, UTF-8, or UTF-16 (with BOM)** are detected automatically and converted to UTF-8 internally.
+The file extension is `.ㄹ`, as in the original specification.
+
+### Coverage of the original specification
+
+| Structural element of the spec | Status | GNEC keyword |
+|---|---|---|
+| Semicolon-terminated statements + `{}` blocks | Yes | — |
+| Variable declaration | Yes | `선언` |
+| Descriptive / symbolic assignment | Yes | `는` or `=` |
+| Struct definitions (field declarations) | Yes | `구조체` |
+| Object creation | Yes | `새로` |
+| Field access and assignment `obj.f` | Yes | — |
+| Array literals, indexing, array fields | Yes | `[ ]` |
+| Function definition / call / return | Yes | `함수` / `돌려주기` |
+| Conditionals and loops | Yes | `만약` / `아니면` / `반복` |
+| break / continue | Yes | `완료` / `계속` |
+| try / catch | Yes | `시도` / `예외` |
+| Process exit | Yes | `종료` |
+| import / export | Syntax only (ignored at run time) | `가져오기` / `내보내기` |
+| `${expr}` string interpolation | Yes | — |
+| `/ㄹ ㄹ/` multi-line comments | Yes | — |
+| true / false / null | Yes | `참` / `거짓` / `없음` |
+| EUC-KR and UTF-16 source input | Yes | — |
+
+Not implemented: proxy (alias) objects, anonymous functions, TTS, the package manager, hardware requirement checks,
+and other parts that are not core to the language or exist only as parody devices.
+
+### Keyword reference
+
+| GNEC | Meaning |
+|---|---|
+| `선언` | variable declaration (var) |
+| `는` | assignment (`=` also works) |
+| `구조체` / `새로` | struct definition / object creation (new) |
+| `함수` / `돌려주기` | function definition / return |
+| `만약` / `아니면` / `반복` | if / else / while |
+| `완료` / `계속` | break / continue |
+| `시도` / `예외` / `종료` | try / catch / exit |
+| `프로그램` | entry-point block |
+| `참` / `거짓` / `없음` | true / false / null |
+| `그리고` / `또는` / `아닌` | and / or / not |
+| `더하기` | same as `+` |
+| `콘솔.로그` | print to stdout (console.log) |
+
+### Syntax overview
+
+```
+/ㄹ Multi-line comment. // single-line comments also work ㄹ/
+
+구조체 사람 {
+    선언 이름;
+    선언 친구들[];      /ㄹ array field ㄹ/
+}
+
+함수 K-인사(사람) {
+    콘솔.로그("안녕 ${사람.이름}");   /ㄹ string interpolation ㄹ/
+    돌려주기 사람.이름;
+}
+
+프로그램 {
+    선언 철수 는 새로 사람();
+    철수.이름 는 "철수";
+    철수.친구들[0] 는 "영희";       /ㄹ index assignment (the array grows as needed) ㄹ/
+
+    선언 i 는 0;
+    반복 (i < 3) {
+        만약 (i == 1) { i++; 계속; }
+        콘솔.로그(i);
+        i++;
+    }
+
+    시도 {
+        선언 x 는 10 / 0;
+    } 예외 (오류) {
+        콘솔.로그("잡음:", 오류);
+    }
+
+    종료(0);
+}
+```
+
+Operator precedence (lowest to highest): `또는`/`||` → `그리고`/`&&` → `아닌`/`!` →
+comparison (`== != < <= > >=`) → `+ 더하기 -` → `* / %` → unary `-` → postfix (`()` `[]` `.field` `.method()`)
+
+#### Value types
+number (double), string (UTF-8, immutable), boolean (참/거짓), `없음` (null), array (mutable, by reference), object (struct instance, by reference), function
+
+- `string + anything` → concatenation; `array + array` → a new combined array
+- String indexing and length count characters (code points); negative indexes count from the end
+- Assigning to `arr[length]` appends; any gap in between is filled with `없음`
+
+#### Built-ins
+- Functions: `출력` (print), `길이` (length), `추가` (append), `종류` (type name), `숫자` (to number), `문자` (to string)
+- Console object: `콘솔.로그(...)` (stdout), `콘솔.오류(...)` (stderr)
+
+#### `-` inside names
+So that names like `K-계승` and `K-인공지능-로드맵` work, a `-` followed directly by a **Hangul** character is part of the name.
+Everywhere else it is an operator: `i--` decrements, `n-1` and `a-b` subtract. When subtracting two Hangul variables,
+put spaces around the minus: `가 - 나`. Increment and decrement (`++`/`--`) are statements only (`i++;`).
+
+### Examples (`examples/`)
+
+| File | What it shows |
+|---|---|
+| `factorial.ㄹ` | functions, loops, return values |
+| `피보나치.ㄹ` | Fibonacci: recursion vs. iteration, catching runaway recursion as an exception |
+| `구구단.ㄹ` | multiplication table: nested loops, building strings with `${}` |
+| `정렬.ㄹ` | bubble sort: arrays passed by reference (in-place sort), comparing numbers and strings |
+| `소수.ㄹ` | primes with the Sieve of Eratosthenes, arrays growing through index assignment |
+| `문자열.ㄹ` | per-character Hangul indexing and length, string reversal, palindrome check |
+| `book.ㄹ` | structs, array fields |
+| `계좌.ㄹ` | bank account: changing state with struct + functions, rejecting bad requests via exceptions |
+| `연결리스트.ㄹ` | linked list: objects pointing to objects, comparing with `없음`, reversing the list |
+| `greet.ㄹ` | `아니면 만약` (else-if) chains, function calls inside interpolation |
+| `retry.ㄹ` | handling exceptions inside a loop and continuing, stopping immediately with `종료(0)` |
+| `원본구조/*.ㄹ` | the structure of the original GNE examples, ported to the neutral keywords |
+
+### Internals
+
+```
+src/keywords.h  keyword table (edit only this file to change keywords)
+src/gnec.h      shared types (Token/Node/Value/Object/Table/Interp)
+src/loader.c    EUC-KR / UTF-16 → UTF-8 conversion (BOM detection, surrogate pairs)
+src/lexer.c     tokenizer (splits ${} interpolation, /ㄹ ㄹ/ comments)
+src/parser.c    recursive-descent parser → AST (parses interpolated expressions recursively)
+src/value.c     values / reference counting / hash tables / UTF-8
+src/interp.c    tree-walking evaluator, objects, exceptions (try/catch), exit
+src/main.c      runner (file / -e)
+```
+
+Memory design:
+
+- **AST**: every node is registered in its `Program`, so on a syntax error (longjmp) a single `program_free()` reclaims
+  everything. Temporary token lists created for interpolated expressions are freed in bulk, on success or failure.
+- **Values**: strings, arrays, and objects are heap objects with reference counts. **Tree structures** where objects hold
+  other objects or arrays in their fields **are reclaimed correctly**.
+- **Exceptions**: runtime errors (division by zero, out-of-range index, type mismatch, and so on) are thrown as exceptions
+  and caught via `jmp_buf` by the innermost `시도/예외`. On entering a `try`, the interpreter records the depth of the
+  call-frame stack and the temporary-value stack; when an exception lands, it unwinds both to that depth so nothing leaks.
+- **Exit**: `종료` jumps straight back to the top level and cannot be caught by `try`.
+- **Safety limits**: parser nesting 200 levels, call depth 1000, array growth gap via index assignment 2^20.
+
+### Known limitations
+- **Self-referencing cycles** (an array or object that contains itself directly or indirectly) are not reclaimed by
+  reference counting. Printing stops at depth 32 with `[...]` so that it cannot loop forever.
+- Closures, proxies, and anonymous functions are not supported.
+- UTF-16 without a BOM cannot be told apart from EUC-KR, so UTF-16 is recognized only with a BOM.
+
+### License
+
+GNEC's source code and documentation are released under the [MIT License](LICENSE). Copyright (c) 2026 chicklee-k
+
+The files in `examples/원본구조/` follow the layout of the original GNE examples. The original GNE repositories show no license, so keep the original author's rights in mind if you distribute those files separately.
+
+### Credits
+
+All of GNEC's source code was written from scratch; no code was copied from the repositories below.
+Their language specification, grammar, and examples were used as references.
+
+- **Original work: perillamint** — [perillamint/GNE](https://github.com/perillamint/GNE)
+- [Shaman1sm/GNE](https://github.com/Shaman1sm/GNE) — "준비된 한국형 언어" ("a ready-made Korean language")
+- [sukso96100/K-SSVM-node](https://github.com/sukso96100/K-SSVM-node) — a fork of [xnuk/K-SSVM-node](https://github.com/xnuk/K-SSVM-node), a runtime implementation for Node.js (BSD 3-Clause, © 2016 Felis catus)
+- [GNE.g4](https://gist.github.com/sftblw/de0ac03c71a1c35e67a8518b0fc84613) (sftblw) — a draft ANTLR 4 grammar for GNE
+
+The GNE archives used as references did not include a license file.
+# GNEC
+# GNEC
