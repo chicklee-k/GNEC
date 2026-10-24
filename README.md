@@ -586,7 +586,7 @@ Their language specification, grammar, and examples were used as references.
 - [sukso96100/K-SSVM-node](https://github.com/sukso96100/K-SSVM-node) — a fork of [xnuk/K-SSVM-node](https://github.com/xnuk/K-SSVM-node), a runtime implementation for Node.js (BSD 3-Clause, © 2016 Felis catus)
 - [GNE.g4](https://gist.github.com/sftblw/de0ac03c71a1c35e67a8518b0fc84613) (sftblw) — a draft ANTLR 4 grammar for GNE
 
-  > [!WARNING]
+> [!WARNING]
 > **경고:** 모든 전체는 Claude Code로 작성.
 
 > [!WARNING]
